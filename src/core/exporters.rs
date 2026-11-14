@@ -9,7 +9,9 @@ pub enum ExportTarget {
     PureSql,
     /// 2. โค้ด C# พร้อม SqlParameter[] (สำหรับโปรเจกต์ WinForms / ADO.NET)
     CSharp,
-    /// 3. โค้ด TypeScript Interface + Query Payload (สำหรับงานเว็บ Vue / React / Node.js)
+    /// 3. [ใหม่] พ่นทั้ง SQL + C# Model Class + Service Method
+    CSharpFullBundle,
+    /// 4. โค้ด TypeScript Interface + Query Payload (สำหรับงานเว็บ Vue / React / Node.js)
     TypeScript,
 }
 
@@ -28,6 +30,7 @@ pub fn export_query(ast: &QueryAst, target: ExportTarget) -> String {
     match target {
         ExportTarget::PureSql => export_pure_sql(&compiled.sql, &params),
         ExportTarget::CSharp => export_csharp(&compiled.sql, &params),
+        ExportTarget::CSharpFullBundle => export_csharp_full_bundle(&ast.main_table.name, &compiled.sql, &compiled.resolved_columns, &params),
         ExportTarget::TypeScript => {
             export_typescript(&ast.main_table.name, &compiled.sql, &compiled.resolved_columns, &params)
         }
@@ -141,7 +144,68 @@ fn export_csharp(sql: &str, params: &[ExtractedParam]) -> String {
 }
 
 // =========================================================================
-// Target 3: TypeScript (สำหรับงานเว็บ Vue / React / Node.js)
+// Target 3: [ใหม่] พ่นทั้ง SQL + C# Model Class + Service Method
+// =========================================================================
+fn export_csharp_full_bundle(
+    main_table: &str,
+    sql: &str,
+    columns: &[ResolvedColumn],
+    params: &[ExtractedParam],
+) -> String {
+    let class_name = format!("{}Dto", to_pascal_case(main_table));
+    let csharp_query_part = export_csharp(sql, params);
+
+    let mut props = Vec::new();
+    for col in columns {
+        let cs_type = match col.sql_data_type.to_lowercase().as_str() {
+            "int" => "int?",
+            "bigint" => "long?",
+            "smallint" => "short?",
+            "tinyint" => "byte?",
+            "bit" => "bool?",
+            "decimal" | "numeric" | "money" | "smallmoney" => "decimal?",
+            "float" => "double?",
+            "real" => "float?",
+            "datetime" | "datetime2" | "smalldatetime" | "date" => "DateTime?",
+            "uniqueidentifier" => "Guid?",
+            _ => "string",
+        };
+        let prop_name = to_pascal_case(&col.final_name);
+        props.push(format!("    public {} {} {{ get; set; }}", cs_type, prop_name));
+    }
+
+    formatdoc!(
+        r#"
+        // ============================================================================
+        // 1. Data Model (DTO) - นำไปวางในโฟลเดอร์ Models/
+        // ============================================================================
+        public class {class_name}
+        {{
+        {props_block}
+        }}
+
+        // ============================================================================
+        // 2. Service Method - นำไปวางใน Services/ ของหน้าจอ WinForms
+        // ============================================================================
+        public List<{class_name}> Get{class_name}List()
+        {{
+        {csharp_query_part}
+            return dt.ToList<{class_name}>();
+        }}
+        "#,
+        class_name = class_name,
+        props_block = props.join("\n"),
+        csharp_query_part = csharp_query_part
+            .lines()
+            .map(|l| format!("    {}", l))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
+
+// =========================================================================
+// Target 4: TypeScript (สำหรับงานเว็บ Vue / React / Node.js)
 // =========================================================================
 fn export_typescript(
     main_table: &str,

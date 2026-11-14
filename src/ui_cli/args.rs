@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser, Debug)]
 #[command(
     name = "qcraft",
-    version = "0.1.0",
+    version = "0.2.3",
     author = "FullStack & WinForms Dev",
     about = "🔨 เครื่องมือสร้าง SQL Query อัจฉริยะ พร้อมระบบพรีวิวข้อมูลจริงและส่งออกโค้ดหลายภาษา",
     long_about = "qcraft ช่วยลดเวลาการเขียนและทดสอบ SQL Query สำหรับฐานข้อมูลองค์กรขนาดใหญ่\nรองรับการสแกนข้อมูลตัวอย่างอัตโนมัติ (Non-Null Scan), แนะนำการ JOIN, พรีวิวผลลัพธ์จริง และส่งออกเป็น Pure SQL, C# และ TypeScript"

@@ -2,22 +2,21 @@ mod ui_cli;
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
-use dialoguer::{theme::ColorfulTheme, Confirm, FuzzySelect, Input};
+use dialoguer::{Confirm, FuzzySelect, Input, theme::ColorfulTheme};
 use qcraft::config::app_config::{AppConfig, CONFIG_FILE_NAME};
-use qcraft::config::dictionary::{SchemaDictionary, DICT_FILE_NAME};
-use qcraft::core::exporters::export_query;
+use qcraft::config::dictionary::{DICT_FILE_NAME, SchemaDictionary};
+use qcraft::core::exporters::{ExportTarget, export_query};
 use qcraft::core::previewer::run_live_preview;
 use qcraft::core::query_ast::QueryAst;
 use qcraft::core::schema_graph::{
-    connect, fetch_all_tables, fetch_table_details_with_samples, inspect_column_distribution,
+    connect, fetch_all_databases, fetch_table_details_with_samples, fetch_tables_in_db,
+    inspect_column_distribution,
 };
 use std::fs;
 use std::io::Write;
 use ui_cli::args::{CliArgs, Commands};
-use ui_cli::prompt::{prompt_export_target, run_conn_wizard, run_query_builder_wizard};
-use ui_cli::renderer::{
-    render_and_copy_export, render_column_inspection, render_preview_table,
-};
+use ui_cli::prompt::{prompt_export_target, run_conn_wizard, run_query_builder_hub};
+use ui_cli::renderer::{render_and_copy_export, render_column_inspection, render_preview_table};
 
 #[tokio::main]
 async fn main() {
@@ -55,15 +54,15 @@ async fn run() -> Result<()> {
         }
 
         // =====================================================================
-        // 2. คำสั่ง `build` (สร้าง Query แบบ Interactive + Live Preview + Export)
+        // 2. คำสั่ง `build` (Interactive Hub + Cross-DB + Live Preview + Export)
         // =====================================================================
         Some(Commands::Build { table, preset }) => {
             let config = ensure_config_ready()?;
             let dict = SchemaDictionary::load_or_create_template()?;
 
             print!(
-                "⏳ กำลังเชื่อมต่อไปยังฐานข้อมูล '{}' ({}:{})... ",
-                config.database, config.host, config.port
+                "⏳ กำลังเชื่อมต่อไปยังเซิร์ฟเวอร์ '{}:{}'... ",
+                config.host, config.port
             );
             std::io::stdout().flush().ok();
 
@@ -72,37 +71,42 @@ async fn run() -> Result<()> {
                 .context("ไม่สามารถเชื่อมต่อฐานข้อมูลได้ กรุณาตรวจสอบการตั้งค่าด้วยคำสั่ง `qcraft conn`")?;
             println!("สำเร็จ!");
 
-            // โหลด AST จากไฟล์ Preset (.json) หรือเริ่มสร้างใหม่ผ่าน Wizard
+            // กรณีโหลดจากไฟล์ Preset (.json) เดิม หรือสร้างใหม่ผ่าน Hub
             let ast: QueryAst = if let Some(preset_path) = preset {
-                println!("📂 กำลังโหลดโครงสร้าง Query จากไฟล์ Preset '{}'...", preset_path);
+                println!(
+                    "📂 กำลังโหลดโครงสร้าง Query จากไฟล์ Preset '{}'...",
+                    preset_path
+                );
                 let json_content = fs::read_to_string(&preset_path)
                     .with_context(|| format!("ไม่สามารถอ่านไฟล์ Preset '{}' ได้", preset_path))?;
-                serde_json::from_str(&json_content)
-                    .with_context(|| format!("รูปแบบไฟล์ Preset '{}' ไม่ถูกต้อง", preset_path))?
+                let loaded_ast: QueryAst = serde_json::from_str(&json_content)
+                    .with_context(|| format!("รูปแบบไฟล์ Preset '{}' ไม่ถูกต้อง", preset_path))?;
+
+                // รัน Live Preview ให้ดูก่อนทันทีเมื่อโหลด Preset
+                print!("⏳ กำลังดึงข้อมูลจริงจาก Preset (Live Preview)... ");
+                std::io::stdout().flush().ok();
+                let preview =
+                    run_live_preview(&mut client, &loaded_ast, config.default_preview_limit)
+                        .await?;
+                println!("สำเร็จ!");
+                render_preview_table(&preview);
+
+                loaded_ast
             } else {
-                let all_tables = if table.is_none() {
-                    fetch_all_tables(&mut client).await?
-                } else {
-                    vec![]
-                };
-
-                run_query_builder_wizard(&mut client, &all_tables, &config, &dict, table).await?
+                // เข้าสู่ Interactive Query Builder Hub (สามารถย้อนกลับแก้ไขขั้นตอนได้ตลอด)
+                match run_query_builder_hub(&mut client, &config, &dict, table).await? {
+                    Some(built_ast) => built_ast,
+                    None => return Ok(()), // ผู้ใช้เลือกยกเลิก
+                }
             };
-
-            // รัน Live Preview ดึงข้อมูลจริงจากฐานข้อมูลมาแสดงตัวอย่าง
-            print!("⏳ กำลังดึงข้อมูลจริงเพื่อแสดงตัวอย่าง (Live Preview)... ");
-            std::io::stdout().flush().ok();
-
-            let preview = run_live_preview(&mut client, &ast, config.default_preview_limit).await?;
-            println!("สำเร็จ!");
-            render_preview_table(&preview);
 
             // เลือกภาษาเป้าหมายและส่งออกโค้ด (พร้อมคัดลอกลง Clipboard อัตโนมัติ)
             let target = prompt_export_target()?;
             let target_label = match target {
-                qcraft::core::exporters::ExportTarget::CSharp => "C# ADO.NET / WinForms",
-                qcraft::core::exporters::ExportTarget::PureSql => "Pure T-SQL",
-                qcraft::core::exporters::ExportTarget::TypeScript => "TypeScript / Web",
+                ExportTarget::CSharp => "C# ADO.NET / WinForms",
+                ExportTarget::PureSql => "Pure T-SQL",
+                ExportTarget::CSharpFullBundle => "C# Full Bundle",
+                ExportTarget::TypeScript => "TypeScript / Web",
             };
 
             let exported_code = export_query(&ast, target);
@@ -133,45 +137,85 @@ async fn run() -> Result<()> {
         }
 
         // =====================================================================
-        // 3. คำสั่ง `inspect` (เจาะลึกข้อมูลตัวอย่างและสถิติความถี่ของคอลัมน์)
+        // 3. คำสั่ง `inspect` (เจาะลึกข้อมูลตัวอย่างและสถิติความถี่ข้าม Database ได้)
         // =====================================================================
         Some(Commands::Inspect { table, column }) => {
             let config = ensure_config_ready()?;
             let theme = ColorfulTheme::default();
 
-            print!("⏳ กำลังเชื่อมต่อไปยังฐานข้อมูล '{}'... ", config.database);
+            print!("⏳ กำลังเชื่อมต่อไปยังเซิร์ฟเวอร์ '{}'... ", config.host);
             std::io::stdout().flush().ok();
             let mut client = connect(&config).await?;
             println!("สำเร็จ!\n");
 
-            let target_table = if let Some(t) = table {
-                t
+            // เลือกฐานข้อมูลที่ต้องการตรวจสอบ
+            let dbs = fetch_all_databases(&mut client).await?;
+            let default_db_idx = if !config.database.is_empty() {
+                dbs.iter()
+                    .position(|d| d.eq_ignore_ascii_case(&config.database))
+                    .unwrap_or(0)
             } else {
-                let tables = fetch_all_tables(&mut client).await?;
-                let idx = FuzzySelect::with_theme(&theme)
-                    .with_prompt("เลือกตารางที่ต้องการตรวจสอบ (พิมพ์ค้นหาได้)")
-                    .items(&tables)
-                    .interact()?;
-                tables[idx].clone()
+                0
             };
 
+            let db_idx = FuzzySelect::with_theme(&theme)
+                .with_prompt("เลือกฐานข้อมูล (Database) ที่ต้องการตรวจสอบ")
+                .items(&dbs)
+                .default(default_db_idx)
+                .interact()?;
+            let target_db = &dbs[db_idx];
+
+            // เลือกตาราง
+            let (target_schema, target_table) = if let Some(t) = table {
+                ("dbo".to_string(), t)
+            } else {
+                let tables = fetch_tables_in_db(&mut client, target_db).await?;
+                let labels: Vec<String> = tables.iter().map(|t| t.display_name()).collect();
+                let idx = FuzzySelect::with_theme(&theme)
+                    .with_prompt(format!("เลือกตารางใน '{}' (พิมพ์ค้นหาได้)", target_db))
+                    .items(&labels)
+                    .interact()?;
+                (tables[idx].schema.clone(), tables[idx].name.clone())
+            };
+
+            // เลือกคอลัมน์
             let target_column = if let Some(c) = column {
                 c
             } else {
-                let cols = fetch_table_details_with_samples(&mut client, &target_table).await?;
+                let cols = fetch_table_details_with_samples(
+                    &mut client,
+                    target_db,
+                    &target_schema,
+                    &target_table,
+                )
+                .await?;
                 let col_names: Vec<String> = cols
                     .iter()
                     .map(|c| format!("{} ({})", c.name, c.data_type))
                     .collect();
                 let idx = FuzzySelect::with_theme(&theme)
-                    .with_prompt(format!("เลือกคอลัมน์ในตาราง '{}' ที่ต้องการเจาะลึก", target_table))
+                    .with_prompt(format!(
+                        "เลือกคอลัมน์ใน '{}.{}' ที่ต้องการเจาะลึก",
+                        target_db, target_table
+                    ))
                     .items(&col_names)
                     .interact()?;
                 cols[idx].name.clone()
             };
 
-            let stats = inspect_column_distribution(&mut client, &target_table, &target_column).await?;
-            render_column_inspection(&target_table, &target_column, &stats);
+            let stats = inspect_column_distribution(
+                &mut client,
+                target_db,
+                &target_schema,
+                &target_table,
+                &target_column,
+            )
+            .await?;
+            render_column_inspection(
+                &format!("{}.{}.{}", target_db, target_schema, target_table),
+                &target_column,
+                &stats,
+            );
         }
 
         // =====================================================================
@@ -180,8 +224,14 @@ async fn run() -> Result<()> {
         Some(Commands::Dict) => {
             let dict = SchemaDictionary::load_or_create_template()?;
             println!("📖 ไฟล์พจนานุกรมคำอธิบายคอลัมน์ส่วนตัว: '{}'", DICT_FILE_NAME);
-            println!("   ├── จำนวนตารางที่บันทึกคำอธิบายไว้: {} ตาราง", dict.tables.len());
-            println!("   └── คุณสามารถเปิดไฟล์ '{}' ด้วย Notepad หรือ VS Code เพื่อเพิ่มคำอธิบายภาษาไทยให้คอลัมน์ที่ชื่อไม่สื่อความหมายได้ทันที\n", DICT_FILE_NAME);
+            println!(
+                "   ├── จำนวนตารางที่บันทึกคำอธิบายไว้: {} ตาราง",
+                dict.tables.len()
+            );
+            println!(
+                "   └── คุณสามารถเปิดไฟล์ '{}' ด้วย Notepad หรือ VS Code เพื่อเพิ่มคำอธิบายภาษาไทยให้คอลัมน์ที่ชื่อไม่สื่อความหมายได้ทันที\n",
+                DICT_FILE_NAME
+            );
         }
 
         // =====================================================================
@@ -189,14 +239,13 @@ async fn run() -> Result<()> {
         // =====================================================================
         None => {
             CliArgs::command().print_help()?;
-            println!("\n\n💡 คำแนะนำ: เริ่มต้นใช้งานครั้งแรกด้วยการพิมพ์ `qcraft conn` และสร้างคิวรีด้วย `qcraft build`");
+            println!(
+                "\n\n💡 คำแนะนำ: เริ่มต้นใช้งานครั้งแรกด้วยการพิมพ์ qcraft conn และสร้างคิวรีด้วย qcraft build"
+            );
         }
     }
-
     Ok(())
 }
-
-/// ตรวจสอบว่ามีไฟล์ตั้งค่าฐานข้อมูลหรือยัง หากไม่มีให้พาไปตั้งค่าอัตโนมัติ
 fn ensure_config_ready() -> Result<AppConfig> {
     if !AppConfig::exists() {
         println!(

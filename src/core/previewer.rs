@@ -2,10 +2,11 @@ use crate::core::query_ast::QueryAst;
 use crate::core::schema_graph::SqlClient;
 use crate::core::sql_compiler::{compile_to_tsql, CompileMode};
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use tiberius::{ColumnData, Row};
 
 /// โครงสร้างเก็บผลลัพธ์การพรีวิวข้อมูลจริง (แยกส่วนออกจาก UI เพื่อให้ใช้ได้ทั้ง CLI และ GUI)
-#[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PreviewResult {
     pub executed_sql: String,
     pub headers: Vec<String>,

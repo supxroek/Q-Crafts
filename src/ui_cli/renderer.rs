@@ -2,9 +2,9 @@ use arboard::Clipboard;
 use comfy_table::{presets::UTF8_FULL, Cell, Color, ContentArrangement, Table};
 use qcraft::core::previewer::PreviewResult;
 
-/// วาดตารางแสดงผลลัพธ์ข้อมูลจริง (Live Preview) ในหน้าจอ Terminal
+/// วาดตารางแสดงผลลัพธ์ข้อมูลจริง (Live Preview) ในหน้าจอ Terminal แบบฉลาด
 pub fn render_preview_table(preview: &PreviewResult) {
-    println!("\n📊 ผลลัพธ์ข้อมูลจริงจากฐานข้อมูล (แสดงตัวอย่าง {} แถว):", preview.rows.len());
+    println!("\n📊 ผลลัพธ์ข้อมูลจริงจากฐานข้อมูล (แสดงตัวอย่าง {} แถว, {} คอลัมน์):", preview.rows.len(), preview.headers.len());
 
     if preview.rows.is_empty() {
         println!("   ⚠️  ไม่พบข้อมูลที่ตรงกับเงื่อนไขนี้ (0 แถว)");
@@ -12,21 +12,33 @@ pub fn render_preview_table(preview: &PreviewResult) {
         return;
     }
 
+    // กำหนดเกณฑ์: หากคอลัมน์เยอะเกินไป (เช่น > 6 คอลัมน์) ให้จำกัดการแสดงผลหรือจัดระเบียบ
+    const MAX_VISIBLE_COLUMNS: usize = 6;
+    let total_cols = preview.headers.len();
+
+    let (headers_to_render, rows_to_render, is_truncated) = if total_cols > MAX_VISIBLE_COLUMNS {
+        // ตัดแสดงเฉพาะ 6 คอลัมน์แรก เพื่อไม่ให้ตารางพังยับเยินบนหน้าจอแคบ
+        let h = preview.headers[..MAX_VISIBLE_COLUMNS].to_vec();
+        let r = preview.rows.iter().map(|row| row[..MAX_VISIBLE_COLUMNS].to_vec()).collect();
+        (h, r, true)
+    } else {
+        (preview.headers.clone(), preview.rows.clone(), false)
+    };
+
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic);
 
     // 1. สร้างแถวหัวตาราง (Headers)
-    let header_cells: Vec<Cell> = preview
-        .headers
+    let header_cells: Vec<Cell> = headers_to_render
         .iter()
         .map(|h| Cell::new(h).fg(Color::Cyan))
         .collect();
     table.set_header(header_cells);
 
-    // 2. เพิ่มข้อมูลทีละแถว (ไฮไลต์ค่า NULL เป็นสีเทาเข้มเพื่อให้อ่านง่าย)
-    for row in &preview.rows {
+    // 2. เพิ่มข้อมูลทีละแถว (ไฮไลต์ค่า NULL เป็นสีเทาเข้ม)
+    for row in &rows_to_render {
         let cells: Vec<Cell> = row
             .iter()
             .map(|val| {
@@ -40,7 +52,17 @@ pub fn render_preview_table(preview: &PreviewResult) {
         table.add_row(cells);
     }
 
-    println!("{table}\n");
+    println!("{table}");
+
+    if is_truncated {
+        println!(
+            "   ⚠️  หมายเหตุ: ตารางนี้มีทั้งหมด {} คอลัมน์ แต่แสดงให้เห็นก่อน {} คอลัมน์แรกเพื่อความสะอาดในการอ่าน",
+            total_cols, MAX_VISIBLE_COLUMNS
+        );
+        println!("   💡 คำแนะนำ: หากต้องการดูทุกคอลัมน์ สามารถเลือกเฉพาะคอลัมน์ที่สนใจในเมนู (SELECT Columns) ได้ครับ\n");
+    } else {
+        println!();
+    }
 }
 
 /// วาดตารางแสดงสถิติข้อมูลของคอลัมน์เดียว (สำหรับคำสั่ง `inspect`)

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-/// โครงสร้างหลักของ Query AST (Intermediate Representation)
-/// เก็บทุกองค์ประกอบของคำสั่ง SQL เพื่อส่งต่อให้ Compiler, Previewer และ Exporters
+/// โครงสร้างหลักของ Query AST (Intermediate Representation v0.2)
+/// รองรับการอ้างอิงข้ามฐานข้อมูล (3-Part Naming) และระบบย้อนกลับแก้ไขขั้นตอน
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct QueryAst {
     pub main_table: TableRef,
@@ -14,13 +14,10 @@ pub struct QueryAst {
 }
 
 impl QueryAst {
-    /// สร้าง QueryAst เริ่มต้นจากตารางหลัก
-    pub fn new(table_name: &str, alias: &str) -> Self {
+    /// สร้าง QueryAst เริ่มต้นจากตารางหลักพร้อมระบุชื่อ Database และ Schema
+    pub fn new(database: &str, schema: &str, table_name: &str, alias: &str) -> Self {
         Self {
-            main_table: TableRef {
-                name: table_name.to_string(),
-                alias: alias.to_string(),
-            },
+            main_table: TableRef::new(database, schema, table_name, alias),
             joins: Vec::new(),
             select_columns: Vec::new(),
             where_conditions: Vec::new(),
@@ -31,14 +28,41 @@ impl QueryAst {
     }
 }
 
-/// ข้อมูลอ้างอิงตารางพร้อมชื่อย่อ (เช่น Orders AS o)
+/// ข้อมูลอ้างอิงตารางแบบเต็ม 3 ส่วน (เช่น [VegOrder].[dbo].[VEG_RECEIVEHD_TEMP] AS vhd)
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct TableRef {
+    pub database: String,
+    pub schema: String,
     pub name: String,
     pub alias: String,
 }
 
-/// คอลัมน์ที่อ้างอิงจากตารางใดตารางหนึ่ง (เช่น o.CustomerId)
+impl TableRef {
+    pub fn new(database: &str, schema: &str, name: &str, alias: &str) -> Self {
+        Self {
+            database: database.to_string(),
+            schema: if schema.is_empty() {
+                "dbo".to_string()
+            } else {
+                schema.to_string()
+            },
+            name: name.to_string(),
+            alias: alias.to_string(),
+        }
+    }
+
+    /// คืนค่ารูปแบบเต็มสำหรับ SQL Server เช่น "[VegOrder].[dbo].[VEG_RECEIVEHD_TEMP]"
+    pub fn full_sql_path(&self) -> String {
+        format!("[{}].[{}].[{}]", self.database, self.schema, self.name)
+    }
+
+    /// คืนค่ารูปแบบสำหรับแสดงผลในเมนู Tree เช่น "VegOrder.dbo.VEG_RECEIVEHD_TEMP (vhd)"
+    pub fn display_label(&self) -> String {
+        format!("{}.{}.{} ({})", self.database, self.schema, self.name, self.alias)
+    }
+}
+
+/// คอลัมน์ที่อ้างอิงจากตารางใดตารางหนึ่ง (เช่น vhd.CustomerId)
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ColumnRef {
     pub table_alias: String,
@@ -53,7 +77,7 @@ impl ColumnRef {
         }
     }
 
-    /// คืนค่ารูปแบบเต็ม เช่น "o.CustomerId"
+    /// คืนค่ารูปแบบเต็ม เช่น "vhd.CustomerId"
     pub fn full_name(&self) -> String {
         format!("{}.{}", self.table_alias, self.column_name)
     }
@@ -84,8 +108,8 @@ impl JoinType {
 pub struct JoinClause {
     pub join_type: JoinType,
     pub target_table: TableRef,
-    pub left_column: ColumnRef,  // คอลัมน์ฝั่งตารางหลัก (เช่น o.CustomerId)
-    pub right_column: ColumnRef, // คอลัมน์ฝั่งตารางที่นำมา Join (เช่น c.Id)
+    pub left_column: ColumnRef,  // คอลัมน์ฝั่งตารางที่มีอยู่ (เช่น vhd.RecId)
+    pub right_column: ColumnRef, // คอลัมน์ฝั่งตารางที่นำมา Join (เช่น vdt.HeaderId)
 }
 
 // =========================================================================
@@ -153,15 +177,15 @@ impl CompareOperator {
 /// แหล่งที่มาของค่าในเงื่อนไข WHERE
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum FilterValue {
-    /// ค่าคงที่ตายตัว เช่น '1', 'ACTIVE', '100' (รวมถึงกฎอัตโนมัติอย่าง IsActive = 1)
+    /// ค่าคงที่ตายตัว เช่น '1', 'ACTIVE', '100'
     Static {
         raw_value: String,
-        is_numeric: bool, // true = ไม่ต้องใส่เครื่องหมาย ' ' ครอบ
+        is_numeric: bool,
     },
     /// พารามิเตอร์สำหรับนำไปรับค่าในโค้ดภายนอก เช่น @StartDate
     Parameter {
-        param_name: String,         // เช่น "StartDate" (เวลา Export จะเติม @ ให้)
-        sample_value: Option<String>, // ค่าชั่วคราวที่ใช้ตอนกด Live Preview
+        param_name: String,
+        sample_value: Option<String>,
         is_numeric: bool,
     },
     /// กรณีเป็น IS NULL / IS NOT NULL
@@ -173,7 +197,7 @@ pub struct WhereCondition {
     pub column: ColumnRef,
     pub operator: CompareOperator,
     pub value: FilterValue,
-    pub is_auto_rule: bool, // ระบุว่าเป็นเงื่อนไขที่ระบบเติมให้อัตโนมัติ (เช่น IsActive = 1) หรือไม่
+    pub is_auto_rule: bool,
 }
 
 // =========================================================================

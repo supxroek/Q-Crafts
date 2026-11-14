@@ -26,7 +26,7 @@ pub struct ResolvedColumn {
     pub sql_data_type: String, // Data Type เดิมใน SQL Server
 }
 
-/// แปลง QueryAst ให้กลายเป็นคำสั่ง T-SQL ที่สมบูรณ์
+/// แปลง QueryAst ให้กลายเป็นคำสั่ง T-SQL ที่สมบูรณ์ (รองรับ Cross-Database 3-Part Naming)
 pub fn compile_to_tsql(ast: &QueryAst, mode: CompileMode) -> CompiledQuery {
     let mut sql_lines = Vec::new();
     let mut resolved_columns = Vec::new();
@@ -44,9 +44,8 @@ pub fn compile_to_tsql(ast: &QueryAst, mode: CompileMode) -> CompiledQuery {
 
     if ast.select_columns.is_empty() {
         sql_lines.push(format!("SELECT {}{}.*", top_clause, ast.main_table.alias));
-
     } else {
-        // นับความถี่ของชื่อคอลัมน์เพื่อตรวจสอบการซ้ำกัน (เช่น c.Name และ p.Name)
+        // นับความถี่ของชื่อคอลัมน์เพื่อตรวจสอบการซ้ำกัน (เช่น vhd.RecId และ vdt.RecId)
         let mut name_counts: HashMap<String, usize> = HashMap::new();
         for field in &ast.select_columns {
             let effective_name = field
@@ -71,18 +70,19 @@ pub fn compile_to_tsql(ast: &QueryAst, mode: CompileMode) -> CompiledQuery {
     }
 
     // -------------------------------------------------------------------------
-    // 2. ส่วนของ FROM และ JOIN หลายตาราง
+    // 2. ส่วนของ FROM และ JOIN หลายตาราง (อ้างอิงเต็มรูปแบบ [Database].[Schema].[Table])
     // -------------------------------------------------------------------------
     sql_lines.push(format!(
-        "FROM [{}] AS {}",
-        ast.main_table.name, ast.main_table.alias
+        "FROM {} AS {}",
+        ast.main_table.full_sql_path(),
+        ast.main_table.alias
     ));
 
     for join in &ast.joins {
         sql_lines.push(format!(
-            "{} [{}] AS {} ON {}.[{}] = {}.[{}]",
+            "{} {} AS {} ON {}.[{}] = {}.[{}]",
             join.join_type.as_sql(),
-            join.target_table.name,
+            join.target_table.full_sql_path(),
             join.target_table.alias,
             join.left_column.table_alias,
             join.left_column.column_name,
@@ -102,7 +102,6 @@ pub fn compile_to_tsql(ast: &QueryAst, mode: CompileMode) -> CompiledQuery {
             let op_sql = cond.operator.as_sql();
 
             let clause = if !cond.operator.requires_value() {
-                // กรณี IS NULL หรือ IS NOT NULL
                 format!("{} {}", col_expr, op_sql)
             } else {
                 match &cond.value {
@@ -110,7 +109,8 @@ pub fn compile_to_tsql(ast: &QueryAst, mode: CompileMode) -> CompiledQuery {
                         raw_value,
                         is_numeric,
                     } => {
-                        let formatted_val = format_sql_literal(raw_value, *is_numeric, &cond.operator);
+                        let formatted_val =
+                            format_sql_literal(raw_value, *is_numeric, &cond.operator);
                         format!("{} {} {}", col_expr, op_sql, formatted_val)
                     }
                     FilterValue::Parameter {
@@ -119,12 +119,10 @@ pub fn compile_to_tsql(ast: &QueryAst, mode: CompileMode) -> CompiledQuery {
                         is_numeric,
                     } => match mode {
                         CompileMode::Export => {
-                            // โหมดส่งออกโค้ดจริง: คงชื่อ @ParamName ไว้
                             let clean_param = param_name.trim_start_matches('@');
                             format!("{} {} @{}", col_expr, op_sql, clean_param)
                         }
                         CompileMode::Preview(_) => {
-                            // โหมดพรีวิว: ใช้ค่าตัวอย่างชั่วคราวมายิงทดสอบจริง
                             let test_val = sample_value.as_deref().unwrap_or("");
                             let formatted_val =
                                 format_sql_literal(test_val, *is_numeric, &cond.operator);
@@ -185,7 +183,6 @@ fn build_select_expression(
 ) -> (String, String) {
     let base_col = format!("{}.[{}]", field.column.table_alias, field.column.column_name);
 
-    // ครอบด้วย Aggregate Function (ถ้ามี)
     let expr_with_agg = match field.aggregate {
         AggregateFunc::None => base_col,
         AggregateFunc::Count => format!("COUNT({})", base_col),
@@ -195,7 +192,6 @@ fn build_select_expression(
         AggregateFunc::Max => format!("MAX({})", base_col),
     };
 
-    // ตรวจสอบชื่อ Alias สุดท้าย
     if let Some(custom_alias) = &field.output_alias {
         return (
             format!("{} AS [{}]", expr_with_agg, custom_alias),
@@ -203,7 +199,6 @@ fn build_select_expression(
         );
     }
 
-    // หากใช้ Aggregate แต่ไม่ได้ตั้งชื่อเล่น ให้ตั้งชื่อให้อัตโนมัติ เช่น Total_NetWeight
     if field.aggregate != AggregateFunc::None {
         let auto_agg_name = format!("{:?}_{}", field.aggregate, field.column.column_name);
         return (
@@ -212,7 +207,7 @@ fn build_select_expression(
         );
     }
 
-    // หากชื่อคอลัมน์ไปซ้ำกับตารางอื่นที่ Join มา ให้เติมชื่อย่อตารางนำหน้าอัตโนมัติ (เช่น c_Name)
+    // หากชื่อคอลัมน์ไปซ้ำกับตารางอื่นที่ Join มา ให้เติม Alias ตารางนำหน้าอัตโนมัติ (เช่น vhd_RecId, vdt_RecId)
     let count = name_counts
         .get(&field.column.column_name.to_lowercase())
         .copied()
@@ -229,10 +224,8 @@ fn build_select_expression(
     }
 }
 
-/// จัดรูปแบบค่าสำหรับใส่ในคำสั่ง SQL (ใส่ ' ' ครอบข้อความ และ Escape เครื่องหมาย ' ป้องกัน Error)
 fn format_sql_literal(raw_value: &str, is_numeric: bool, operator: &CompareOperator) -> String {
     if *operator == CompareOperator::In {
-        // กรณี IN เช่น 1, 2, 3 หรือ A, B
         let items: Vec<String> = raw_value
             .split(',')
             .map(|s| s.trim())
@@ -253,7 +246,6 @@ fn format_sql_literal(raw_value: &str, is_numeric: bool, operator: &CompareOpera
     } else {
         let escaped = raw_value.replace('\'', "''");
         if *operator == CompareOperator::Like && !escaped.contains('%') {
-            // หากเลือก LIKE แต่ผู้ใช้ไม่ได้พิมพ์ % มา ระบบเติม % หน้า-หลังให้อัตโนมัติ!
             format!("N'%{}%'", escaped)
         } else {
             format!("N'{}'", escaped)
