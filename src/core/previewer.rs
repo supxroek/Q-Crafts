@@ -70,7 +70,7 @@ fn format_column_value(row: &Row, index: usize) -> String {
     };
 
     match cell {
-        ColumnData::String(Some(value)) => truncate_text(value.trim(), 35),
+        ColumnData::String(Some(value)) => value.trim().to_string(),
         ColumnData::String(None)
         | ColumnData::U8(None)
         | ColumnData::I16(None)
@@ -101,13 +101,13 @@ fn format_column_value(row: &Row, index: usize) -> String {
         ColumnData::Guid(Some(value)) => value.to_string(),
         ColumnData::Binary(Some(_)) => "<BINARY>".to_string(),
         ColumnData::Numeric(Some(value)) => value.to_string(),
-        ColumnData::Xml(Some(value)) => truncate_text(&value.to_string(), 35),
+        ColumnData::Xml(Some(value)) => value.to_string(),
         ColumnData::DateTime(Some(value)) => format_sql_datetime(
-            value.days() + DAYS_FROM_YEAR_1_TO_1900,
+            value.days() - DAYS_FROM_1900_TO_1970,
             value.seconds_fragments() as u64 * 10_000_000 / 300,
         ),
         ColumnData::SmallDateTime(Some(value)) => format_sql_datetime(
-            value.days() as i32 + DAYS_FROM_YEAR_1_TO_1900,
+            value.days() as i32 - DAYS_FROM_1900_TO_1970,
             value.seconds_fragments() as u64 * 60 * 10_000_000,
         ),
         ColumnData::Date(None)
@@ -116,13 +116,13 @@ fn format_column_value(row: &Row, index: usize) -> String {
         | ColumnData::Time(None) => "NULL".to_string(),
         ColumnData::Date(Some(value)) => format_date(value.days()),
         ColumnData::DateTime2(Some(value)) => format_sql_datetime(
-            value.date().days() as i32 - 1,
+            value.date().days() as i32 - DAYS_FROM_YEAR_1_TO_1970,
             value.time().increments() * 10u64.pow(7 - value.time().scale() as u32),
         ),
         ColumnData::DateTimeOffset(Some(value)) => {
             let datetime = value.datetime2();
             format_sql_datetime(
-                datetime.date().days() as i32 - 1,
+                datetime.date().days() as i32 - DAYS_FROM_YEAR_1_TO_1970,
                 datetime.time().increments() * 10u64.pow(7 - datetime.time().scale() as u32),
             )
         }
@@ -132,7 +132,8 @@ fn format_column_value(row: &Row, index: usize) -> String {
     }
 }
 
-const DAYS_FROM_YEAR_1_TO_1900: i32 = 693_595;
+const DAYS_FROM_1900_TO_1970: i32 = 25_567;
+const DAYS_FROM_YEAR_1_TO_1970: i32 = 719_162;
 
 fn format_sql_datetime(days_from_year_1: i32, ticks_since_midnight: u64) -> String {
     let (year, month, day) = civil_date_from_days(days_from_year_1);
@@ -145,7 +146,8 @@ fn format_sql_datetime(days_from_year_1: i32, ticks_since_midnight: u64) -> Stri
 }
 
 fn format_date(days_from_year_1: u32) -> String {
-    let (year, month, day) = civil_date_from_days(days_from_year_1 as i32 - 1);
+    let (year, month, day) =
+        civil_date_from_days(days_from_year_1 as i32 - DAYS_FROM_YEAR_1_TO_1970);
     format!("{year:04}-{month:02}-{day:02}")
 }
 
@@ -159,8 +161,8 @@ fn format_time(ticks_since_midnight: u64) -> String {
 }
 
 fn civil_date_from_days(days_from_year_1: i32) -> (i32, u32, u32) {
-    let z = days_from_year_1 - 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let z = days_from_year_1 + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
     let day_of_era = z - era * 146_097;
     let year_of_era =
         (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
@@ -174,13 +176,4 @@ fn civil_date_from_days(days_from_year_1: i32) -> (i32, u32, u32) {
         month as u32,
         day as u32,
     )
-}
-
-fn truncate_text(text: &str, max_len: usize) -> String {
-    if text.chars().count() > max_len {
-        let short: String = text.chars().take(max_len - 3).collect();
-        format!("{}...", short)
-    } else {
-        text.to_string()
-    }
 }
