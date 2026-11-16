@@ -1,0 +1,16 @@
+host = "spc805srv"
+port = 1433
+database = "VegOrder"
+auth_mode = "SqlServer"
+username = "sa"
+password = ""
+trust_cert = true
+default_preview_limit = 5
+global_rules = []
+
+# --- ตัวอย่างการเพิ่มกฎพื้นฐานอัตโนมัติ (เอาเครื่องหมาย # ออกเพื่อใช้งาน) ---
+# [[global_rules]]
+# column_name = "IsActive"
+# operator = "="
+# value = "1"
+# is_numeric = true

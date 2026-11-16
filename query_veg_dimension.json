@@ -1,0 +1,135 @@
+{
+  "main_table": {
+    "database": "VegOrder",
+    "schema": "dbo",
+    "name": "VEG_DIMENSION",
+    "alias": "vd"
+  },
+  "joins": [
+    {
+      "join_type": "Inner",
+      "target_table": {
+        "database": "VegOrder",
+        "schema": "dbo",
+        "name": "DIMENSIONS",
+        "alias": "dim"
+      },
+      "left_column": {
+        "table_alias": "vd",
+        "column_name": "NUM"
+      },
+      "right_column": {
+        "table_alias": "dim",
+        "column_name": "NUM"
+      }
+    }
+  ],
+  "select_columns": [
+    {
+      "column": {
+        "table_alias": "vd",
+        "column_name": "DESCRIPTION"
+      },
+      "output_alias": null,
+      "aggregate": "None",
+      "sql_data_type": "nvarchar"
+    },
+    {
+      "column": {
+        "table_alias": "vd",
+        "column_name": "NUM"
+      },
+      "output_alias": null,
+      "aggregate": "None",
+      "sql_data_type": "nvarchar"
+    },
+    {
+      "column": {
+        "table_alias": "dim",
+        "column_name": "DESCRIPTION"
+      },
+      "output_alias": null,
+      "aggregate": "None",
+      "sql_data_type": "nvarchar"
+    },
+    {
+      "column": {
+        "table_alias": "dim",
+        "column_name": "NUM"
+      },
+      "output_alias": null,
+      "aggregate": "None",
+      "sql_data_type": "nvarchar"
+    },
+    {
+      "column": {
+        "table_alias": "dim",
+        "column_name": "CLOSED"
+      },
+      "output_alias": null,
+      "aggregate": "None",
+      "sql_data_type": "int"
+    },
+    {
+      "column": {
+        "table_alias": "dim",
+        "column_name": "DATAAREAID"
+      },
+      "output_alias": null,
+      "aggregate": "None",
+      "sql_data_type": "nvarchar"
+    }
+  ],
+  "where_conditions": [
+    {
+      "column": {
+        "table_alias": "dim",
+        "column_name": "CLOSED"
+      },
+      "operator": "Eq",
+      "value": {
+        "Static": {
+          "raw_value": "0",
+          "is_numeric": true
+        }
+      },
+      "is_auto_rule": false
+    }
+  ],
+  "group_by": [
+    {
+      "table_alias": "vd",
+      "column_name": "DESCRIPTION"
+    },
+    {
+      "table_alias": "vd",
+      "column_name": "NUM"
+    },
+    {
+      "table_alias": "dim",
+      "column_name": "DESCRIPTION"
+    },
+    {
+      "table_alias": "dim",
+      "column_name": "NUM"
+    },
+    {
+      "table_alias": "dim",
+      "column_name": "CLOSED"
+    },
+    {
+      "table_alias": "dim",
+      "column_name": "DATAAREAID"
+    }
+  ],
+  "order_by": [
+    {
+      "column": {
+        "table_alias": "vd",
+        "column_name": "NUM"
+      },
+      "direction": "Asc"
+    }
+  ],
+  "top_limit": null
+}
