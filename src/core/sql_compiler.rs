@@ -43,7 +43,8 @@ pub fn compile_to_tsql(ast: &QueryAst, mode: CompileMode) -> CompiledQuery {
     };
 
     if ast.select_columns.is_empty() {
-        sql_lines.push(format!("SELECT {}{}.*", top_clause, ast.main_table.alias));
+        let wildcard = if ast.main_table.alias.trim().is_empty() { "*".to_string() } else { format!("{}.*", ast.main_table.alias) };
+        sql_lines.push(format!("SELECT {}{}", top_clause, wildcard));
     } else {
         // นับความถี่ของชื่อคอลัมน์เพื่อตรวจสอบการซ้ำกัน (เช่น vhd.RecId และ vdt.RecId)
         let mut name_counts: HashMap<String, usize> = HashMap::new();
@@ -72,11 +73,12 @@ pub fn compile_to_tsql(ast: &QueryAst, mode: CompileMode) -> CompiledQuery {
     // -------------------------------------------------------------------------
     // 2. ส่วนของ FROM และ JOIN หลายตาราง (อ้างอิงเต็มรูปแบบ [Database].[Schema].[Table])
     // -------------------------------------------------------------------------
-    sql_lines.push(format!(
-        "FROM {} AS {}",
-        ast.main_table.full_sql_path(),
-        ast.main_table.alias
-    ));
+    let main_alias = ast.main_table.alias.trim();
+    sql_lines.push(if main_alias.is_empty() {
+        format!("FROM {}", ast.main_table.full_sql_path())
+    } else {
+        format!("FROM {} AS {}", ast.main_table.full_sql_path(), main_alias)
+    });
 
     for join in &ast.joins {
         sql_lines.push(format!(
@@ -98,7 +100,7 @@ pub fn compile_to_tsql(ast: &QueryAst, mode: CompileMode) -> CompiledQuery {
         let mut conditions = Vec::new();
 
         for cond in &ast.where_conditions {
-            let col_expr = format!("{}.[{}]", cond.column.table_alias, cond.column.column_name);
+            let col_expr = column_reference(&cond.column.table_alias, &cond.column.column_name);
             let op_sql = cond.operator.as_sql();
 
             let clause = if !cond.operator.requires_value() {
@@ -146,7 +148,7 @@ pub fn compile_to_tsql(ast: &QueryAst, mode: CompileMode) -> CompiledQuery {
         let groups: Vec<String> = ast
             .group_by
             .iter()
-            .map(|c| format!("{}.[{}]", c.table_alias, c.column_name))
+            .map(|c| column_reference(&c.table_alias, &c.column_name))
             .collect();
         sql_lines.push(format!("GROUP BY {}", groups.join(", ")));
     }
@@ -160,9 +162,8 @@ pub fn compile_to_tsql(ast: &QueryAst, mode: CompileMode) -> CompiledQuery {
             .iter()
             .map(|o| {
                 format!(
-                    "{}.[{}] {}",
-                    o.column.table_alias,
-                    o.column.column_name,
+                    "{} {}",
+                    column_reference(&o.column.table_alias, &o.column.column_name),
                     o.direction.as_sql()
                 )
             })
@@ -177,11 +178,20 @@ pub fn compile_to_tsql(ast: &QueryAst, mode: CompileMode) -> CompiledQuery {
 }
 
 /// สร้าง Expression ของคอลัมน์ใน SELECT พร้อมเติม AS อัตโนมัติหากชื่อซ้ำหรือใช้ Aggregate
+fn column_reference(table_alias: &str, column_name: &str) -> String {
+    let alias = table_alias.trim();
+    if alias.is_empty() {
+        format!("[{}]", column_name)
+    } else {
+        format!("{}.[{}]", alias, column_name)
+    }
+}
+
 fn build_select_expression(
     field: &SelectField,
     name_counts: &HashMap<String, usize>,
 ) -> (String, String) {
-    let base_col = format!("{}.[{}]", field.column.table_alias, field.column.column_name);
+    let base_col = column_reference(&field.column.table_alias, &field.column.column_name);
 
     let expr_with_agg = match field.aggregate {
         AggregateFunc::None => base_col,
@@ -214,7 +224,11 @@ fn build_select_expression(
         .unwrap_or(0);
 
     if count > 1 {
-        let disambiguated = format!("{}_{}", field.column.table_alias, field.column.column_name);
+        let disambiguated = if field.column.table_alias.trim().is_empty() {
+            field.column.column_name.clone()
+        } else {
+            format!("{}_{}", field.column.table_alias, field.column.column_name)
+        };
         (
             format!("{} AS [{}]", expr_with_agg, disambiguated),
             disambiguated,

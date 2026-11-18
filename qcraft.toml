@@ -5,7 +5,7 @@ auth_mode = "SqlServer"
 username = "sa"
 password = ""
 trust_cert = true
-default_preview_limit = 5
+default_preview_limit = 100
 global_rules = []
 
 # --- ตัวอย่างการเพิ่มกฎพื้นฐานอัตโนมัติ (เอาเครื่องหมาย # ออกเพื่อใช้งาน) ---

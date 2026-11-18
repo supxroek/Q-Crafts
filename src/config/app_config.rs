@@ -68,7 +68,7 @@ impl Default for AppConfig {
             username: Some("sa".to_string()),
             password: None,
             trust_cert: true,
-            default_preview_limit: 5,
+            default_preview_limit: 100,
 
             // เริ่มต้นยังไม่กำหนด Rules ใดๆ (สามารถเพิ่มในไฟล์ qcraft.toml หรือเปิดคอมเมนต์ด้านล่างได้)
             global_rules: Vec::new(),
